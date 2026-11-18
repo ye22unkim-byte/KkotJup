@@ -8,7 +8,13 @@ import {
   isMarketOpen,
 } from "@/lib/market-hours";
 
-export function Countdown({ compact = false }: { compact?: boolean }) {
+export function Countdown({
+  compact = false,
+  tone = "default",
+}: {
+  compact?: boolean;
+  tone?: "default" | "soft";
+}) {
   const [mounted, setMounted] = useState(false);
   const [nowTick, setNowTick] = useState(0);
 
@@ -31,11 +37,26 @@ export function Countdown({ compact = false }: { compact?: boolean }) {
   if (compact) {
     return (
       <div
-        className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-bold ${
-          open ? "bg-petal text-white animate-tick" : "bg-leaf-deep/90 text-white"
+        className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-bold ${
+          tone === "soft"
+            ? "bg-[#d9899c] text-white"
+            : open
+              ? "bg-petal text-white animate-tick"
+              : "bg-leaf-deep/90 text-white"
         }`}
         suppressHydrationWarning
       >
+        {tone === "soft" && (
+          <svg
+            aria-hidden
+            viewBox="0 0 16 16"
+            className="h-3.5 w-3.5 fill-none stroke-white"
+            strokeWidth="1.6"
+          >
+            <circle cx="8" cy="8" r="6" />
+            <path d="M8 4.5V8l2.2 1.4" strokeLinecap="round" />
+          </svg>
+        )}
         <span>{label}</span>
         <span className="tabular-nums tracking-tight" suppressHydrationWarning>
           {timeText}

@@ -1,17 +1,11 @@
 import type { Metadata } from "next";
-import { Noto_Sans_KR, Noto_Serif_KR } from "next/font/google";
+import { Jua } from "next/font/google";
 import "./globals.css";
 
-const display = Noto_Serif_KR({
-  weight: ["500", "700", "900"],
+const rounded = Jua({
+  weight: "400",
   subsets: ["latin"],
-  variable: "--font-display-loaded",
-});
-
-const body = Noto_Sans_KR({
-  weight: ["400", "500", "700", "900"],
-  subsets: ["latin"],
-  variable: "--font-body-loaded",
+  variable: "--font-rounded",
 });
 
 export const metadata: Metadata = {
@@ -27,11 +21,19 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ko">
-      <body className={`${display.variable} ${body.variable} antialiased`}>
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Jua&display=swap"
+          rel="stylesheet"
+        />
+      </head>
+      <body className={`${rounded.variable} antialiased`}>
         <style>{`
           :root {
-            --font-display: var(--font-display-loaded), "Noto Serif KR", "Noto Sans KR", serif;
-            --font-body: var(--font-body-loaded), "Noto Sans KR", sans-serif;
+            --font-display: var(--font-rounded), "Jua", "Noto Sans KR", sans-serif;
+            --font-body: var(--font-rounded), "Jua", "Noto Sans KR", sans-serif;
           }
         `}</style>
         {children}

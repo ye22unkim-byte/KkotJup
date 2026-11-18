@@ -73,7 +73,7 @@ export function LoginPanel() {
       {mode === "closed" && (
         <button
           type="button"
-          className="btn-primary w-full animate-pulse-glow text-lg shadow-[0_12px_28px_rgba(214,116,141,0.28)]"
+          className="btn-primary w-full text-lg !bg-[#d9899c] shadow-[0_10px_24px_rgba(201,120,140,0.28)]"
           onClick={openMenu}
         >
           로그인

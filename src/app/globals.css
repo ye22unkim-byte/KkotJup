@@ -16,8 +16,8 @@
   --line: rgba(61, 42, 34, 0.12);
   --shadow: 0 20px 48px rgba(74, 52, 39, 0.12);
   --radius: 1.25rem;
-  --font-display: "Noto Serif KR", "Noto Sans KR", serif;
-  --font-body: "Noto Sans KR", sans-serif;
+  --font-display: "Jua", "Noto Sans KR", sans-serif;
+  --font-body: "Jua", "Noto Sans KR", sans-serif;
 }
 
 @theme inline {
