@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ProductCard } from "@/lib/types";
-import { FlowerVisual } from "./FlowerVisual";
+import { ProductHero } from "./ProductHero";
 
 export function ProductCardView({
   product,
@@ -22,23 +22,18 @@ export function ProductCardView({
             className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
           />
         ) : (
-          <FlowerVisual className="h-full w-full" />
+          <ProductHero product={product} className="h-full w-full" />
         )}
         <div className="absolute left-3 top-3 rounded-full bg-petal px-3 py-1 text-xs font-bold text-white">
           -{product.discountRate}%
         </div>
-        <div className="absolute bottom-3 left-3 right-3 flex justify-between gap-2">
-          <span className="rounded-full bg-black/45 px-3 py-1 text-xs font-semibold text-white backdrop-blur">
-            {product.freshnessTag}
-          </span>
-          <span className="rounded-full bg-white/90 px-3 py-1 text-xs font-bold text-ink">
-            남은 {product.remainingSlots}개
-          </span>
+        <div className="absolute right-3 top-3 rounded-full bg-black/45 px-3 py-1 text-xs font-semibold text-white backdrop-blur">
+          남은 {product.remainingSlots}개
         </div>
       </div>
       <div className="space-y-3 p-4">
         <div>
-          <h3 className="text-lg font-bold leading-snug text-ink">{product.title}</h3>
+          <h3 className="break-keep text-lg font-bold leading-snug text-ink">{product.title}</h3>
           <p className="mt-1 text-sm text-ink-soft">
             {product.stallZone} · {product.stallCode} · {product.sellerName}
           </p>

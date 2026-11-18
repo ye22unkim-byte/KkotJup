@@ -1,18 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
-import { addProduct, listProducts } from "@/lib/store";
-import type { ProductCard } from "@/lib/types";
+import { addProduct, getStorageMode, listProducts } from "@/lib/store";
 import { getTodayCloseIso } from "@/lib/market-hours";
 
 export async function GET() {
-  return NextResponse.json({ products: listProducts() });
+  try {
+    const products = await listProducts();
+    return NextResponse.json({ products, storage: getStorageMode() });
+  } catch (error) {
+    console.error(error);
+    return NextResponse.json({ error: "목록을 불러오지 못했습니다." }, { status: 500 });
+  }
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const id = `p-${Date.now()}`;
-    const product: ProductCard = {
-      id,
+    const quantity = Number(body.quantity ?? 1);
+
+    const product = await addProduct({
       title: body.title,
       flowers: body.flowers ?? [],
       price: Number(body.price),
@@ -22,20 +27,19 @@ export async function POST(req: NextRequest) {
       bloomState: body.bloomState,
       freshnessTag: body.freshnessTag,
       careTips: body.careTips ?? [],
-      quantity: Number(body.quantity ?? 1),
+      quantity,
       imageDataUrl: body.imageDataUrl ?? "",
-      stallCode: body.stallCode,
-      stallZone: body.stallZone,
+      stallCode: body.stallCode || body.sellerName || "-",
+      stallZone: body.stallZone || "",
       sellerName: body.sellerName,
-      createdAt: new Date().toISOString(),
       closesAt: body.closesAt || getTodayCloseIso(),
-      remainingSlots: Number(body.quantity ?? 1),
-    };
+      remainingSlots: quantity,
+    });
 
-    addProduct(product);
-    return NextResponse.json({ product }, { status: 201 });
+    return NextResponse.json({ product, storage: getStorageMode() }, { status: 201 });
   } catch (error) {
     console.error(error);
-    return NextResponse.json({ error: "등록 실패" }, { status: 500 });
+    const message = error instanceof Error ? error.message : "등록 실패";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

@@ -1,21 +1,22 @@
 @import "tailwindcss";
 
 :root {
-  --ink: #122018;
-  --ink-soft: #3a5246;
-  --leaf: #1f6b45;
-  --leaf-deep: #0d3b28;
-  --petal: #e11d62;
-  --petal-soft: #ff6b9a;
-  --dawn: #e8f5ee;
-  --blush: #ffe4ec;
-  --cream: #f7fbf8;
-  --warn: #d97706;
-  --surface: rgba(255, 255, 255, 0.72);
-  --line: rgba(18, 32, 24, 0.12);
-  --shadow: 0 24px 60px rgba(13, 59, 40, 0.18);
+  /* 베이지 · 로즈 · 브라운 테마 */
+  --ink: #3d2a22;
+  --ink-soft: #6b5348;
+  --leaf: #8f5a45;
+  --leaf-deep: #4a3427;
+  --petal: #d6748d;
+  --petal-soft: #e8a0b2;
+  --dawn: #f3e6d5;
+  --blush: #f6ddd8;
+  --cream: #f2e8d9;
+  --warn: #c47a3a;
+  --surface: rgba(255, 252, 247, 0.82);
+  --line: rgba(61, 42, 34, 0.12);
+  --shadow: 0 20px 48px rgba(74, 52, 39, 0.12);
   --radius: 1.25rem;
-  --font-display: "Black Han Sans", "Noto Sans KR", sans-serif;
+  --font-display: "Noto Serif KR", "Noto Sans KR", serif;
   --font-body: "Noto Sans KR", sans-serif;
 }
 
@@ -49,9 +50,9 @@ body {
 
 body {
   background:
-    radial-gradient(1200px 700px at 85% -10%, rgba(255, 107, 154, 0.28), transparent 55%),
-    radial-gradient(900px 600px at -10% 20%, rgba(31, 107, 69, 0.22), transparent 50%),
-    linear-gradient(160deg, #f4faf6 0%, #fff5f8 45%, #eef8f2 100%);
+    radial-gradient(900px 520px at 90% 0%, rgba(214, 116, 141, 0.12), transparent 55%),
+    radial-gradient(700px 480px at -5% 30%, rgba(143, 90, 69, 0.08), transparent 50%),
+    linear-gradient(180deg, #f7efe4 0%, #f2e8d9 45%, #ebe0d0 100%);
   background-attachment: fixed;
 }
 
@@ -80,10 +81,10 @@ textarea {
 @keyframes pulse-glow {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(225, 29, 98, 0.35);
+    box-shadow: 0 0 0 0 rgba(214, 116, 141, 0.35);
   }
   50% {
-    box-shadow: 0 0 0 14px rgba(225, 29, 98, 0);
+    box-shadow: 0 0 0 14px rgba(214, 116, 141, 0);
   }
 }
 
@@ -104,6 +105,18 @@ textarea {
   }
   50% {
     transform: scale(1.03);
+  }
+}
+
+@keyframes sparkle {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(1) rotate(0deg);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15) rotate(12deg);
   }
 }
 
@@ -131,10 +144,15 @@ textarea {
   animation: tick-urgency 1.2s ease-in-out infinite;
 }
 
+.animate-sparkle {
+  animation: sparkle 2.8s ease-in-out infinite;
+}
+
 .brand-mark {
   font-family: var(--font-display);
-  letter-spacing: -0.04em;
+  letter-spacing: -0.03em;
   line-height: 0.95;
+  font-weight: 700;
 }
 
 .glass {
@@ -152,7 +170,7 @@ textarea {
   padding: 0.85rem 1.4rem;
   border: none;
   border-radius: 999px;
-  background: linear-gradient(135deg, var(--petal) 0%, #ff4d88 100%);
+  background: linear-gradient(135deg, var(--petal) 0%, #c45f7a 100%);
   color: white;
   font-weight: 700;
   cursor: pointer;
@@ -178,8 +196,8 @@ textarea {
   min-height: 3.25rem;
   padding: 0.85rem 1.4rem;
   border-radius: 999px;
-  border: 1.5px solid rgba(18, 32, 24, 0.18);
-  background: rgba(255, 255, 255, 0.7);
+  border: 1.5px solid rgba(61, 42, 34, 0.16);
+  background: rgba(255, 252, 247, 0.75);
   color: var(--ink);
   font-weight: 700;
   cursor: pointer;
@@ -188,7 +206,7 @@ textarea {
 
 .btn-secondary:hover {
   transform: translateY(-1px);
-  background: white;
+  background: #fffaf4;
 }
 
 .field {
@@ -196,12 +214,12 @@ textarea {
   min-height: 3.1rem;
   padding: 0.85rem 1rem;
   border-radius: 1rem;
-  border: 1.5px solid rgba(18, 32, 24, 0.14);
-  background: rgba(255, 255, 255, 0.85);
+  border: 1.5px solid rgba(61, 42, 34, 0.14);
+  background: rgba(255, 252, 247, 0.9);
   outline: none;
 }
 
 .field:focus {
-  border-color: var(--leaf);
-  box-shadow: 0 0 0 3px rgba(31, 107, 69, 0.15);
+  border-color: var(--petal);
+  box-shadow: 0 0 0 3px rgba(214, 116, 141, 0.18);
 }

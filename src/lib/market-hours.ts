@@ -1,7 +1,7 @@
-/** 양재꽃시장 기준: 평일 11:30 ~ 13:00 */
-export const MARKET_OPEN_HOUR = 11;
+/** 양재꽃시장 기준: 평일 09:30 ~ 20:00 */
+export const MARKET_OPEN_HOUR = 9;
 export const MARKET_OPEN_MINUTE = 30;
-export const MARKET_CLOSE_HOUR = 13;
+export const MARKET_CLOSE_HOUR = 20;
 export const MARKET_CLOSE_MINUTE = 0;
 
 export function getMarketWindow(now = new Date()) {

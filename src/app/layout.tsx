@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
-import { Black_Han_Sans, Noto_Sans_KR } from "next/font/google";
+import { Noto_Sans_KR, Noto_Serif_KR } from "next/font/google";
 import "./globals.css";
 
-const display = Black_Han_Sans({
-  weight: "400",
+const display = Noto_Serif_KR({
+  weight: ["500", "700", "900"],
   subsets: ["latin"],
   variable: "--font-display-loaded",
 });
@@ -30,7 +30,7 @@ export default function RootLayout({
       <body className={`${display.variable} ${body.variable} antialiased`}>
         <style>{`
           :root {
-            --font-display: var(--font-display-loaded), "Black Han Sans", "Noto Sans KR", sans-serif;
+            --font-display: var(--font-display-loaded), "Noto Serif KR", "Noto Sans KR", serif;
             --font-body: var(--font-body-loaded), "Noto Sans KR", sans-serif;
           }
         `}</style>

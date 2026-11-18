@@ -1,16 +1,36 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AnalyzeResult, SellerSession } from "@/lib/types";
-import { Countdown } from "@/components/Countdown";
+import type { AnalyzeResult, BloomState, SellerSession } from "@/lib/types";
+import { AppHeader } from "@/components/AppHeader";
+import { FinalProductPreview } from "@/components/FinalProductPreview";
+import {
+  clearSellerSession,
+  readSellerSession,
+  writeSellerSession,
+} from "@/lib/auth-session";
+import { compressImageDataUrl } from "@/lib/image";
 
-type Step = "login" | "capture" | "analyzing" | "approve" | "done";
+type Step = "capture" | "analyzing" | "approve" | "preview" | "done";
 
-const SESSION_KEY = "kkotjup-seller";
+const BLOOM_OPTIONS: BloomState[] = ["봉오리", "만개", "빠른 감상"];
+
+function recalcDiscount(price: number, retailEstimate: number) {
+  if (!retailEstimate || retailEstimate <= 0) return 0;
+  return Math.max(0, Math.round((1 - price / retailEstimate) * 100));
+}
+
+function buildSummary(title: string, price: number) {
+  const short = title.replace(/\s*떨이.*$/, "").trim() || title;
+  return `${short} / ${price.toLocaleString("ko-KR")}원`;
+}
 
 export default function SellerPage() {
-  const [step, setStep] = useState<Step>("login");
+  const router = useRouter();
+  const [ready, setReady] = useState(false);
+  const [step, setStep] = useState<Step>("capture");
   const [session, setSession] = useState<SellerSession>({
     stallCode: "",
     stallZone: "",
@@ -22,12 +42,11 @@ export default function SellerPage() {
   const [source, setSource] = useState<"gemini" | "mock" | null>(null);
   const [error, setError] = useState("");
   const [holding, setHolding] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [recordingMs, setRecordingMs] = useState(0);
   const [postedId, setPostedId] = useState<string | null>(null);
-  const [confirmCode, setConfirmCode] = useState("");
-  const [confirmMsg, setConfirmMsg] = useState("");
+  const [postedPickupCode, setPostedPickupCode] = useState<string | null>(null);
 
-  const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -35,82 +54,44 @@ export default function SellerPage() {
   const tickRef = useRef<number | null>(null);
   const frameRef = useRef<string>("");
   const holdingRef = useRef(false);
+  const recordStartedAtRef = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as SellerSession;
-        if (parsed.stallCode && parsed.stallZone) {
-          setSession(parsed);
-          setStep("capture");
-        }
-      } catch {
-        /* ignore */
-      }
+    const parsed = readSellerSession();
+    if (!parsed) {
+      router.replace("/");
+      return;
     }
-  }, []);
+    setSession(parsed);
+    writeSellerSession(parsed);
+    setReady(true);
+  }, [router]);
 
-  const stopCamera = useCallback(() => {
+  const stopMic = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
   }, []);
 
+  const clearRecordTimers = useCallback(() => {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     if (step !== "capture") {
-      stopCamera();
-      return;
+      clearRecordTimers();
+      holdingRef.current = false;
+      setHolding(false);
+      stopMic();
     }
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment" },
-          audio: true,
-        });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
-        }
-      } catch {
-        setError("카메라/마이크 권한이 필요합니다. 데모는 사진 업로드로도 가능합니다.");
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      stopCamera();
-    };
-  }, [step, stopCamera]);
-
-  function saveLogin(e: React.FormEvent) {
-    e.preventDefault();
-    if (!session.stallCode || !session.stallZone || !session.sellerName) {
-      setError("호수/구역/상호를 모두 입력해주세요.");
-      return;
-    }
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    setError("");
-    setStep("capture");
-  }
-
-  function captureFrame(): string | null {
-    const video = videoRef.current;
-    if (!video || !video.videoWidth) return null;
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    ctx.drawImage(video, 0, 0);
-    return canvas.toDataURL("image/jpeg", 0.85);
-  }
+  }, [step, stopMic, clearRecordTimers]);
 
   function blobToBase64(blob: Blob): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -124,6 +105,17 @@ export default function SellerPage() {
     });
   }
 
+  function pickRecorderMimeType() {
+    if (typeof MediaRecorder === "undefined") return "";
+    const candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/mp4",
+      "audio/ogg;codecs=opus",
+    ];
+    return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+  }
+
   async function runAnalyze(opts: {
     imageDataUrl: string;
     audioBlob?: Blob | null;
@@ -132,8 +124,10 @@ export default function SellerPage() {
     setStep("analyzing");
     setError("");
     try {
-      const imageBase64 = opts.imageDataUrl.split(",")[1];
-      const imageMimeType = opts.imageDataUrl.match(/^data:(.*?);/)?.[1] || "image/jpeg";
+      const compressed = await compressImageDataUrl(opts.imageDataUrl);
+      setImageDataUrl(compressed.dataUrl);
+      frameRef.current = compressed.dataUrl;
+
       let audioBase64: string | undefined;
       let audioMimeType: string | undefined;
       if (opts.audioBlob && opts.audioBlob.size > 0) {
@@ -145,8 +139,8 @@ export default function SellerPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          imageBase64,
-          imageMimeType,
+          imageBase64: compressed.base64,
+          imageMimeType: compressed.mimeType,
           audioBase64,
           audioMimeType,
           transcript: opts.transcript,
@@ -154,8 +148,20 @@ export default function SellerPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "분석 실패");
-      setAnalysis(data.result);
+      const result = data.result as AnalyzeResult;
+      const careTips = [...(result.careTips ?? [])];
+      while (careTips.length < 3) careTips.push("");
+      setAnalysis({
+        ...result,
+        careTips: careTips.slice(0, 3),
+        flowers: result.flowers?.length ? result.flowers : [{ name: "", approxStems: 1 }],
+        summary: result.summary || buildSummary(result.title, result.price),
+        discountRate: recalcDiscount(result.price, result.retailEstimate),
+      });
       setSource(data.source);
+      if (data.source === "mock") {
+        setError("AI(Gemini) 대신 데모 분석이 적용됐어요. 사진·색감이 다르면 직접 수정하세요.");
+      }
       setStep("approve");
     } catch (err) {
       setError(err instanceof Error ? err.message : "분석 실패");
@@ -163,184 +169,344 @@ export default function SellerPage() {
     }
   }
 
-  function startHold() {
-    if (holdingRef.current) return;
-    holdingRef.current = true;
-    setHolding(true);
-    setRecordingMs(0);
-    chunksRef.current = [];
-    const frame = captureFrame() || imageDataUrl;
-    if (frame) {
-      frameRef.current = frame;
-      setImageDataUrl(frame);
+  async function ensureMic() {
+    if (streamRef.current) {
+      const live = streamRef.current.getTracks().some((t) => t.readyState === "live");
+      if (live) return streamRef.current;
+      stopMic();
     }
-
-    const stream = streamRef.current;
-    if (stream) {
-      try {
-        const recorder = new MediaRecorder(stream);
-        mediaRecorderRef.current = recorder;
-        recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) chunksRef.current.push(e.data);
-        };
-        recorder.start();
-      } catch {
-        /* audio optional */
-      }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("이 브라우저에서는 마이크 녹음을 지원하지 않아요.");
     }
-
-    const started = Date.now();
-    tickRef.current = window.setInterval(() => {
-      setRecordingMs(Date.now() - started);
-    }, 100);
-
-    holdTimerRef.current = window.setTimeout(() => {
-      void endHold();
-    }, 10000);
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    });
+    streamRef.current = stream;
+    return stream;
   }
 
-  async function endHold() {
+  async function transcribeBlob(audioBlob: Blob) {
+    setTranscribing(true);
+    setError("");
+    try {
+      const audioBase64 = await blobToBase64(audioBlob);
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          audioBase64,
+          audioMimeType: audioBlob.type || "audio/webm",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "음성 정리 실패");
+      const text = String(data.text || "").trim();
+      if (!text) throw new Error("정리된 텍스트가 비어 있어요.");
+      setTranscript(text);
+      if (data.source === "mock") {
+        setError("AI 음성 정리 대신 데모 문장이 들어갔어요. 직접 고친 뒤 AI 요약 하기를 누르세요.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "음성 정리 실패");
+    } finally {
+      setTranscribing(false);
+    }
+  }
+
+  async function startRecording() {
+    if (holdingRef.current || transcribing) return;
+    if (!imageDataUrl && !frameRef.current) {
+      setError("먼저 사진을 업로드해주세요.");
+      return;
+    }
+    if (typeof MediaRecorder === "undefined") {
+      setError("이 브라우저에서는 녹음을 지원하지 않아요. 아래에 직접 입력하세요.");
+      return;
+    }
+
+    setError("");
+    chunksRef.current = [];
+    mediaRecorderRef.current = null;
+
+    try {
+      const stream = await ensureMic();
+      const mimeType = pickRecorderMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+      // timeslice: 손을 빨리 떼도 chunk가 쌓이도록
+      recorder.start(200);
+
+      holdingRef.current = true;
+      setHolding(true);
+      recordStartedAtRef.current = Date.now();
+      setRecordingMs(0);
+
+      tickRef.current = window.setInterval(() => {
+        setRecordingMs(Date.now() - recordStartedAtRef.current);
+      }, 100);
+
+      holdTimerRef.current = window.setTimeout(() => {
+        void stopRecordingAndTranscribe();
+      }, 10000);
+    } catch (err) {
+      holdingRef.current = false;
+      setHolding(false);
+      clearRecordTimers();
+      stopMic();
+      const msg = err instanceof Error ? err.message : "";
+      setError(
+        msg.includes("지원")
+          ? msg
+          : "마이크 권한이 필요합니다. 주소창 왼쪽 자물쇠에서 마이크를 허용한 뒤 다시 눌러주세요.",
+      );
+    }
+  }
+
+  async function stopRecordingAndTranscribe() {
     if (!holdingRef.current) return;
     holdingRef.current = false;
-
-    if (holdTimerRef.current) {
-      clearTimeout(holdTimerRef.current);
-      holdTimerRef.current = null;
-    }
-    if (tickRef.current) {
-      clearInterval(tickRef.current);
-      tickRef.current = null;
-    }
+    clearRecordTimers();
     setHolding(false);
 
     const recorder = mediaRecorderRef.current;
-    const frame = frameRef.current || imageDataUrl || captureFrame();
-    if (!frame) {
-      setError("사진을 먼저 촬영하거나 업로드해주세요.");
-      return;
-    }
-    setImageDataUrl(frame);
+    const elapsed = Date.now() - recordStartedAtRef.current;
 
     let audioBlob: Blob | null = null;
     if (recorder && recorder.state !== "inactive") {
       audioBlob = await new Promise<Blob | null>((resolve) => {
-        recorder.onstop = () => {
-          resolve(new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" }));
+        const finish = () => {
+          const type = recorder.mimeType || pickRecorderMimeType() || "audio/webm";
+          resolve(new Blob(chunksRef.current, { type }));
         };
-        recorder.stop();
+        recorder.onstop = finish;
+        try {
+          if (recorder.state === "recording") recorder.requestData();
+          recorder.stop();
+        } catch {
+          finish();
+        }
       });
     }
 
-    await runAnalyze({
-      imageDataUrl: frame,
-      audioBlob,
-      transcript: transcript || undefined,
-    });
+    mediaRecorderRef.current = null;
+    stopMic();
+
+    if (elapsed < 600) {
+      setError("너무 짧게 눌렀어요. 버튼을 한 번 눌러 녹음을 시작하고, 말한 뒤 다시 눌러 주세요.");
+      return;
+    }
+
+    if (!audioBlob || audioBlob.size < 200) {
+      setError("녹음이 비어 있어요. 마이크 권한을 확인한 뒤 다시 녹음하거나, 아래에 직접 입력하세요.");
+      return;
+    }
+
+    await transcribeBlob(audioBlob);
   }
 
-  async function onUploadImage(file: File) {
+  function toggleRecording() {
+    if (transcribing) return;
+    if (holdingRef.current) {
+      void stopRecordingAndTranscribe();
+      return;
+    }
+    void startRecording();
+  }
+
+  function onUploadImage(file: File) {
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result as string;
       frameRef.current = dataUrl;
       setImageDataUrl(dataUrl);
+      setError("");
+      // 마이크 권한을 미리 받아 두면 녹음 시작이 안정적
+      void ensureMic().catch(() => {
+        /* 사용자가 나중에 녹음 버튼에서 다시 허용하면 됨 */
+      });
     };
     reader.readAsDataURL(file);
   }
 
+  function updateAnalysis(patch: Partial<AnalyzeResult>) {
+    setAnalysis((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, ...patch };
+      if (patch.price !== undefined || patch.retailEstimate !== undefined) {
+        next.discountRate = recalcDiscount(next.price, next.retailEstimate);
+      }
+      if (patch.title !== undefined || patch.price !== undefined) {
+        if (patch.summary === undefined) {
+          next.summary = buildSummary(next.title, next.price);
+        }
+      }
+      // 요약만 고친 경우에도 상품명·구성과 맞추기
+      if (patch.summary !== undefined && patch.title === undefined) {
+        const fromSummary = patch.summary.split("/")[0]?.trim();
+        if (fromSummary) next.title = fromSummary;
+      }
+
+      // 상품명을 바꾸면 구성 꽃(1개일 때)도 같이 맞춤 — 상인 입력 기준으로 통일
+      if ((patch.title !== undefined || patch.summary !== undefined) && next.flowers.length === 1) {
+        const cleaned = next.title.replace(/\s*떨이.*$/u, "").trim() || next.title;
+        if (cleaned) {
+          next.flowers = [{ ...next.flowers[0], name: cleaned }];
+        }
+      }
+      return next;
+    });
+  }
+
+  function goToPreview() {
+    if (!analysis) return;
+    let flowers = analysis.flowers.filter((f) => f.name.trim());
+    if (flowers.length === 0 && analysis.title.trim()) {
+      flowers = [{ name: analysis.title.trim(), approxStems: 1 }];
+    }
+    if (!analysis.title.trim() || !analysis.price) {
+      setError("상품명과 가격을 확인해주세요.");
+      return;
+    }
+    if (flowers.length === 0) {
+      setError("AI 요약 하기를 먼저 실행하거나 구성을 입력해주세요.");
+      return;
+    }
+    setAnalysis({ ...analysis, flowers });
+    setError("");
+    setStep("preview");
+  }
+
+  function updateFlower(index: number, patch: { name?: string; approxStems?: number }) {
+    setAnalysis((prev) => {
+      if (!prev) return prev;
+      const flowers = prev.flowers.map((f, i) => (i === index ? { ...f, ...patch } : f));
+      return { ...prev, flowers };
+    });
+  }
+
+  function addFlower() {
+    setAnalysis((prev) => {
+      if (!prev) return prev;
+      return { ...prev, flowers: [...prev.flowers, { name: "", approxStems: 1 }] };
+    });
+  }
+
+  function removeFlower(index: number) {
+    setAnalysis((prev) => {
+      if (!prev) return prev;
+      const flowers = prev.flowers.filter((_, i) => i !== index);
+      return { ...prev, flowers: flowers.length ? flowers : [{ name: "", approxStems: 1 }] };
+    });
+  }
+
+  function updateCareTip(index: number, value: string) {
+    setAnalysis((prev) => {
+      if (!prev) return prev;
+      const careTips = [...prev.careTips];
+      while (careTips.length < 3) careTips.push("");
+      careTips[index] = value;
+      return { ...prev, careTips: careTips.slice(0, 3) };
+    });
+  }
+
   async function publish() {
     if (!analysis) return;
+    const flowers = analysis.flowers.filter((f) => f.name.trim());
+    if (!analysis.title.trim() || !analysis.price || flowers.length === 0) {
+      setError("최종 카드의 상품명·가격·구성을 확인해주세요.");
+      setStep("approve");
+      return;
+    }
     setError("");
     try {
+      const payload = {
+        ...analysis,
+        title: analysis.title.trim(),
+        summary: analysis.summary || buildSummary(analysis.title, analysis.price),
+        discountRate: recalcDiscount(analysis.price, analysis.retailEstimate),
+        flowers,
+        careTips: analysis.careTips.filter((t) => t.trim()),
+        imageDataUrl,
+        stallCode: session.stallCode,
+        stallZone: session.stallZone,
+        sellerName: session.sellerName,
+      };
       const res = await fetch("/api/products", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...analysis,
-          imageDataUrl,
-          stallCode: session.stallCode,
-          stallZone: session.stallZone,
-          sellerName: session.sellerName,
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "등록 실패");
       setPostedId(data.product.id);
+      setPostedPickupCode(data.product.pickupCode || null);
       setStep("done");
     } catch (err) {
       setError(err instanceof Error ? err.message : "등록 실패");
     }
   }
 
-  async function confirmPickup() {
-    if (!postedId || !confirmCode) return;
-    const res = await fetch(`/api/products/${postedId}/confirm`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: confirmCode }),
-    });
-    const data = await res.json();
-    setConfirmMsg(data.message);
+  const hasPhoto = Boolean(imageDataUrl);
+
+  if (!ready) {
+    return <main className="p-8 text-ink-soft">로그인 확인 중…</main>;
   }
 
   return (
     <main className="mx-auto min-h-screen max-w-lg px-5 pb-16 pt-6">
-      <header className="mb-6 flex items-center justify-between">
-        <Link href="/" className="brand-mark text-3xl text-leaf-deep">
-          꽃줍
-        </Link>
-        <Countdown compact />
-      </header>
-
-      {step === "login" && (
-        <section className="animate-rise space-y-5">
-          <div>
-            <h1 className="text-3xl font-black text-ink">상인 로그인</h1>
-            <p className="mt-2 text-ink-soft">호수/구역만 입력하면 바로 등록할 수 있어요.</p>
-          </div>
-          <form onSubmit={saveLogin} className="space-y-3">
-            <input
-              className="field"
-              placeholder="상호명 (예: 행복화훼)"
-              value={session.sellerName}
-              onChange={(e) => setSession({ ...session, sellerName: e.target.value })}
-            />
-            <input
-              className="field"
-              placeholder="구역 (예: 장미관 1층)"
-              value={session.stallZone}
-              onChange={(e) => setSession({ ...session, stallZone: e.target.value })}
-            />
-            <input
-              className="field"
-              placeholder="호수 (예: A-12)"
-              value={session.stallCode}
-              onChange={(e) => setSession({ ...session, stallCode: e.target.value })}
-            />
-            <button type="submit" className="btn-primary w-full">
-              들어가기
-            </button>
-          </form>
-        </section>
-      )}
+      <AppHeader backLabel="홈" fallbackHref="/" />
 
       {step === "capture" && (
         <section className="animate-rise space-y-4">
           <div>
-            <p className="text-sm font-bold text-leaf">
-              {session.stallZone} · {session.stallCode}
-            </p>
-            <h1 className="text-3xl font-black">10초 마감 떨이 등록</h1>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-bold text-leaf">
+                {session.sellerName}
+                {session.stallZone ? ` · ${session.stallZone}` : ""}
+              </p>
+              <button
+                type="button"
+                className="text-xs font-semibold text-ink-soft underline"
+                onClick={() => {
+                  clearSellerSession();
+                  router.push("/");
+                }}
+              >
+                로그아웃
+              </button>
+            </div>
+            <Link
+              href="/seller/products"
+              className="mt-3 flex w-full items-center justify-center rounded-full bg-dawn px-4 py-2.5 text-sm font-bold text-leaf-deep shadow-sm transition hover:bg-leaf hover:text-white"
+            >
+              {session.sellerName} 상품 카드 확인하기
+            </Link>
+            <h1 className="mt-4 text-3xl font-black">10초 마감 떨이 등록</h1>
             <p className="mt-2 text-ink-soft">
-              촬영 버튼을 누른 채 가격만 말하세요. 최대 10초면 끝납니다.
+              {hasPhoto
+                ? "녹음 버튼을 눌러 말한 뒤 다시 누르면, AI가 아래 칸에 텍스트로 정리합니다."
+                : "먼저 꽃 양동이 사진 한 장을 업로드해주세요."}
             </p>
           </div>
 
-          <div className="relative aspect-[3/4] overflow-hidden rounded-[1.5rem] bg-black shadow-[var(--shadow)]">
-            <video ref={videoRef} playsInline muted className="h-full w-full object-cover" />
-            {imageDataUrl && !streamRef.current && (
+          <div className="relative aspect-[3/4] overflow-hidden rounded-[1.5rem] bg-leaf-deep/20 shadow-[var(--shadow)]">
+            {hasPhoto ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={imageDataUrl} alt="미리보기" className="absolute inset-0 h-full w-full object-cover" />
+              <img src={imageDataUrl} alt="업로드한 꽃 사진" className="h-full w-full object-cover" />
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+                <p className="text-lg font-bold text-ink">1단계 · 사진 업로드</p>
+                <p className="text-sm text-ink-soft">남은 꽃 양동이 사진을 올려주세요</p>
+              </div>
             )}
             {holding && (
               <div className="absolute inset-x-0 top-0 bg-petal/90 px-4 py-3 text-center text-sm font-bold text-white">
@@ -349,60 +515,72 @@ export default function SellerPage() {
             )}
           </div>
 
-          <textarea
-            className="field min-h-20"
-            placeholder='음성 대신 입력도 가능: 예) "장미랑 리시안셔스 합쳐서 만 원에 떨이"'
-            value={transcript}
-            onChange={(e) => setTranscript(e.target.value)}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) onUploadImage(file);
+              e.target.value = "";
+            }}
           />
 
-          <label className="btn-secondary w-full cursor-pointer">
-            사진 업로드
-            <input
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void onUploadImage(file);
-              }}
-            />
-          </label>
-
-          <button
-            type="button"
-            className={`btn-primary w-full text-lg ${holding ? "animate-pulse-glow scale-[1.02]" : ""}`}
-            onMouseDown={() => startHold()}
-            onMouseUp={() => void endHold()}
-            onMouseLeave={() => {
-              if (holding) void endHold();
-            }}
-            onTouchStart={(e) => {
-              e.preventDefault();
-              startHold();
-            }}
-            onTouchEnd={(e) => {
-              e.preventDefault();
-              void endHold();
-            }}
-          >
-            {holding ? "말하는 중… 손을 떼면 분석" : "길게 눌러 촬영 + 말하기"}
-          </button>
-
-          {imageDataUrl && (
+          {!hasPhoto ? (
             <button
               type="button"
-              className="btn-secondary w-full"
-              onClick={() =>
-                void runAnalyze({
-                  imageDataUrl,
-                  transcript: transcript || "만 원에 떨이",
-                })
-              }
+              className="btn-primary w-full text-lg"
+              onClick={() => fileInputRef.current?.click()}
             >
-              사진만으로 AI 분석하기
+              사진 업로드
             </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn-secondary w-full"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                사진 재업로드
+              </button>
+
+              <textarea
+                className="field min-h-20"
+                placeholder='음성 대신 입력도 가능: 예) "장미랑 리시안셔스 합쳐서 만 원에 떨이"'
+                value={transcript}
+                onChange={(e) => setTranscript(e.target.value)}
+                disabled={transcribing}
+              />
+
+              <button
+                type="button"
+                disabled={transcribing}
+                className={`btn-primary w-full text-lg ${holding ? "animate-pulse-glow scale-[1.02]" : ""}`}
+                onClick={() => toggleRecording()}
+              >
+                {holding
+                  ? `녹음 중 ${Math.min(10, Math.ceil(recordingMs / 1000))}초 · 다시 눌러 완료`
+                  : transcribing
+                    ? "AI가 음성 정리 중…"
+                    : "눌러서 말하기 (최대 10초)"}
+              </button>
+
+              <button
+                type="button"
+                className="btn-secondary w-full"
+                disabled={transcribing}
+                onClick={() =>
+                  void runAnalyze({
+                    imageDataUrl,
+                    transcript: transcript || undefined,
+                  })
+                }
+              >
+                AI 요약 하기
+              </button>
+            </>
           )}
         </section>
       )}
@@ -418,31 +596,221 @@ export default function SellerPage() {
         <section className="animate-rise space-y-5">
           <div>
             <p className="text-sm font-bold text-leaf">
-              AI 생성 {source === "mock" ? "(데모 모드)" : "(Gemini)"}
+              AI 생성 {source === "mock" ? "(데모 모드)" : "(Gemini)"} · 탭해서 수정
             </p>
-            <h1 className="mt-1 text-4xl font-black leading-tight">{analysis.summary}</h1>
+            <input
+              className="mt-2 w-full border-0 bg-transparent p-0 text-3xl font-black leading-tight text-ink outline-none"
+              value={analysis.summary}
+              onChange={(e) => updateAnalysis({ summary: e.target.value })}
+              aria-label="상품 요약"
+            />
+            <p className="mt-1 text-xs text-ink-soft">위 요약을 직접 고쳐도 됩니다</p>
           </div>
+
           {imageDataUrl && (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={imageDataUrl} alt="등록 사진" className="aspect-square w-full rounded-[1.4rem] object-cover" />
+            <img
+              src={imageDataUrl}
+              alt="등록 사진"
+              className="aspect-square w-full rounded-[1.4rem] object-cover"
+            />
           )}
-          <ul className="space-y-2 rounded-[1.2rem] bg-white/80 p-4 text-sm">
-            <li>
-              <strong>구성:</strong>{" "}
-              {analysis.flowers.map((f) => `${f.name}${f.approxStems ? ` ${f.approxStems}대` : ""}`).join(", ")}
-            </li>
-            <li>
-              <strong>상태:</strong> {analysis.freshnessTag}
-            </li>
-            <li>
-              <strong>혜택:</strong> 소매 대비 약 {analysis.discountRate}% 저렴
-            </li>
-          </ul>
-          <button type="button" className="btn-primary w-full text-lg" onClick={() => void publish()}>
-            올리기
+
+          <div className="space-y-4 rounded-[1.2rem] bg-white/90 p-4 shadow-sm">
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-sm font-bold">오늘 구출 구성 (상인 입력)</p>
+                <button type="button" className="text-sm font-bold text-leaf" onClick={addFlower}>
+                  + 꽃 추가
+                </button>
+              </div>
+              <p className="mb-2 text-xs text-ink-soft">
+                AI 추측이 틀리면 여기서 사진/말씀하신 내용으로 꼭 고쳐주세요. 소비자 화면에 그대로
+                나갑니다.
+              </p>
+              <div className="space-y-2">
+                {analysis.flowers.map((flower, index) => (
+                  <div key={`flower-${index}`} className="flex gap-2">
+                    <input
+                      className="field"
+                      placeholder="꽃 이름 (예: 핑크 튤립)"
+                      value={flower.name}
+                      onChange={(e) => updateFlower(index, { name: e.target.value })}
+                    />
+                    <input
+                      className="field w-24 shrink-0"
+                      type="number"
+                      min={0}
+                      placeholder="대수"
+                      value={flower.approxStems ?? ""}
+                      onChange={(e) =>
+                        updateFlower(index, {
+                          approxStems: Number(e.target.value) || 0,
+                        })
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="shrink-0 px-2 text-sm font-bold text-petal"
+                      onClick={() => removeFlower(index)}
+                    >
+                      삭제
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <label className="block text-sm font-bold">
+              상태
+              <input
+                className="field mt-1"
+                value={analysis.freshnessTag}
+                onChange={(e) => updateAnalysis({ freshnessTag: e.target.value })}
+                placeholder="예: 지금 가장 예쁜 만개"
+              />
+            </label>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block text-sm font-bold">
+                개화 상태
+                <select
+                  className="field mt-1"
+                  value={analysis.bloomState}
+                  onChange={(e) =>
+                    updateAnalysis({ bloomState: e.target.value as BloomState })
+                  }
+                >
+                  {BLOOM_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-sm font-bold">
+                수량
+                <input
+                  className="field mt-1"
+                  type="number"
+                  min={1}
+                  value={analysis.quantity}
+                  onChange={(e) =>
+                    updateAnalysis({ quantity: Math.max(1, Number(e.target.value) || 1) })
+                  }
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block text-sm font-bold">
+                판매가 (원)
+                <input
+                  className="field mt-1"
+                  type="number"
+                  min={0}
+                  value={analysis.price}
+                  onChange={(e) => updateAnalysis({ price: Number(e.target.value) || 0 })}
+                />
+              </label>
+              <label className="block text-sm font-bold">
+                소매 추정가 (원)
+                <input
+                  className="field mt-1"
+                  type="number"
+                  min={0}
+                  value={analysis.retailEstimate}
+                  onChange={(e) =>
+                    updateAnalysis({ retailEstimate: Number(e.target.value) || 0 })
+                  }
+                />
+              </label>
+            </div>
+
+            <p className="text-sm font-semibold text-petal">
+              혜택: 소매 대비 약 {analysis.discountRate}% 저렴
+            </p>
+
+            <label className="block text-sm font-bold">
+              상품명
+              <input
+                className="field mt-1"
+                value={analysis.title}
+                onChange={(e) => updateAnalysis({ title: e.target.value })}
+              />
+            </label>
+
+            <label className="block text-sm font-bold">
+              색감 키워드 (쉼표)
+              <input
+                className="field mt-1"
+                value={analysis.colorKeywords.join(", ")}
+                onChange={(e) =>
+                  updateAnalysis({
+                    colorKeywords: e.target.value
+                      .split(",")
+                      .map((k) => k.trim())
+                      .filter(Boolean),
+                  })
+                }
+              />
+            </label>
+
+            <div>
+              <p className="mb-2 text-sm font-bold">관리 팁</p>
+              <div className="space-y-2">
+                {(analysis.careTips.length ? analysis.careTips : ["", "", ""]).map(
+                  (tip, index) => (
+                    <input
+                      key={`tip-${index}`}
+                      className="field"
+                      placeholder={`${index + 1}번째 팁`}
+                      value={tip}
+                      onChange={(e) => updateCareTip(index, e.target.value)}
+                    />
+                  ),
+                )}
+              </div>
+            </div>
+          </div>
+
+          <button type="button" className="btn-primary w-full text-lg" onClick={goToPreview}>
+            최종 카드 확인
           </button>
-          <button type="button" className="btn-secondary w-full" onClick={() => setStep("capture")}>
-            다시 찍기
+          <button
+            type="button"
+            className="btn-secondary w-full"
+            onClick={() => {
+              setAnalysis(null);
+              setStep("capture");
+            }}
+          >
+            이전으로
+          </button>
+        </section>
+      )}
+
+      {step === "preview" && analysis && (
+        <section className="animate-rise space-y-5">
+          <div>
+            <p className="text-sm font-bold text-leaf">소비자에게 이렇게 보여요</p>
+            <h1 className="mt-1 text-2xl font-black">최종 카드 미리보기</h1>
+            <p className="mt-2 text-sm text-ink-soft">
+              구성·가격·상태는 위에서 수정한 상인 입력값 그대로입니다. 확인 후 업로드하세요.
+            </p>
+          </div>
+
+          <FinalProductPreview
+            analysis={analysis}
+            session={session}
+            imageDataUrl={imageDataUrl}
+          />
+
+          <button type="button" className="btn-primary w-full text-lg" onClick={() => void publish()}>
+            업로드
+          </button>
+          <button type="button" className="btn-secondary w-full" onClick={() => setStep("approve")}>
+            수정하기
           </button>
         </section>
       )}
@@ -450,37 +818,29 @@ export default function SellerPage() {
       {step === "done" && (
         <section className="animate-rise space-y-5 text-center">
           <h1 className="text-3xl font-black text-leaf">노출 시작!</h1>
-          <p className="text-ink-soft">인근 소비자 피드에 바로 올라갔어요.</p>
-          <Link href="/buyer" className="btn-secondary inline-flex">
-            소비자 피드 보기
-          </Link>
-          <div className="rounded-[1.2rem] bg-white/85 p-5 text-left">
-            <h2 className="font-bold">픽업 확인</h2>
-            <p className="mt-1 text-sm text-ink-soft">손님이 보여준 4자리 번호를 입력하세요.</p>
-            <div className="mt-3 flex gap-2">
-              <input
-                className="field"
-                maxLength={4}
-                placeholder="1234"
-                value={confirmCode}
-                onChange={(e) => setConfirmCode(e.target.value)}
-              />
-              <button type="button" className="btn-primary shrink-0 px-5" onClick={() => void confirmPickup()}>
-                확인
-              </button>
-            </div>
-            {confirmMsg && <p className="mt-3 text-sm font-bold text-leaf">{confirmMsg}</p>}
+          <p className="text-ink-soft">소비자 피드에 바로 올라갔어요.</p>
+          <div className="rounded-[1.4rem] bg-leaf-deep p-6 text-white">
+            <p className="text-sm font-semibold text-white/80">픽업 번호</p>
+            <p className="brand-mark mt-2 text-6xl tracking-widest">
+              {postedPickupCode || "----"}
+            </p>
+            <p className="mt-3 text-sm text-white/85">
+              손님이 예약하면 같은 번호를 보여줍니다. 이 번호로 꽃을 건네주세요.
+            </p>
           </div>
+          {postedId && (
+            <p className="text-xs text-ink-soft">상품 ID: {postedId}</p>
+          )}
           <button
             type="button"
             className="btn-primary w-full"
             onClick={() => {
               setAnalysis(null);
               setImageDataUrl("");
+              frameRef.current = "";
               setTranscript("");
               setPostedId(null);
-              setConfirmCode("");
-              setConfirmMsg("");
+              setPostedPickupCode(null);
               setStep("capture");
             }}
           >
